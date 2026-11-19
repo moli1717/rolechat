@@ -1,0 +1,372 @@
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>角色卡对话器 - 原地替换重生成</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui}
+body{background:#111;color:#eee;padding:10px;max-width:620px;margin:0 auto}
+.top-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+select, button, textarea, input{padding:8px;border-radius:7px;border:none;font-size:14px}
+.btn{background:#2563eb;color:#fff}
+.btn-del{background:#b91c1c;color:#fff}
+.btn-export{background:#059669;color:#fff}
+.btn-import{background:#d97706;color:#fff}
+.btn-clear-chat{background:#7c3aed;color:#fff}
+.btn-regen{background:#0891b2;color:#fff}
+.card-panel{background:#1f1f1f;padding:12px;border-radius:9px;margin-bottom:12px;display:grid;gap:8px}
+.card-item label{display:block;margin-bottom:3px;font-size:13px;color:#bbbbbb}
+.card-item input,.card-item textarea{width:100%}
+.chat-box{height:48vh;overflow-y:auto;margin-bottom:10px;padding:4px}
+.msg-wrap{margin:8px 0;max-width:86%;display:flex;flex-direction:column;gap:4px}
+.msg-wrap.user{margin-left:auto}
+.msg-wrap.ai{margin-right:auto}
+.msg{padding:10px;border-radius:10px;white-space:pre-wrap}
+.user .msg{background:#2563eb}
+.ai .msg{background:#2c2c2c}
+.msg-ctrl{display:flex;gap:4px;justify-content:flex-end}
+.msg-ctrl button{padding:4px 6px;font-size:12px}
+.input-area{display:flex;gap:6px}
+#msg-input{flex:1;padding:10px;border-radius:8px;border:none;font-size:16px}
+#import-file{display:none}
+</style>
+</head>
+<body>
+<div class="top-bar">
+    <select id="char-select"></select>
+    <button class="btn" onclick="newChar()">新建角色卡</button>
+    <button class="btn" onclick="saveChar()">保存角色卡</button>
+    <button class="btn-del" onclick="delChar()">删除角色卡</button>
+    <button class="btn-export" onclick="exportChar()">导出角色卡</button>
+    <button class="btn-import" onclick="document.getElementById('import-file').click()">导入角色卡</button>
+    <input type="file" id="import-file" accept=".json" onchange="importChar(this)">
+    <button class="btn-clear-chat" onclick="clearChat()">清空当前会话</button>
+    <button class="btn-export" onclick="exportChatLog()">导出会话记录</button>
+</div>
+
+<div class="card-panel">
+    <div class="card-item">
+        <label>角色名称</label>
+        <input id="char-name" placeholder="例如：路梵古">
+    </div>
+    <div class="card-item">
+        <label>人物背景</label>
+        <textarea id="char-bg" rows="3" placeholder="在这里填写身世、过往经历、故事背景"></textarea>
+    </div>
+    <div class="card-item">
+        <label>性格特点</label>
+        <textarea id="char-personality" rows="2" placeholder="性格、习惯、喜恶、情绪模式"></textarea>
+    </div>
+    <div class="card-item">
+        <label>人物关系</label>
+        <textarea id="char-relation" rows="2" placeholder="和其他角色的关系，例如暗恋顾淮"></textarea>
+    </div>
+    <div class="card-item">
+        <label>自定义输出规则（RP格式）</label>
+        <textarea id="char-rule" rows="3" placeholder="输出格式要求，动作描写用括号包裹等"></textarea>
+    </div>
+</div>
+
+<div class="chat-box" id="chat"></div>
+<div class="input-area">
+    <input id="msg-input" placeholder="在这里发送对话..." />
+    <button class="btn" id="send-btn">发送</button>
+</div>
+
+<script>
+const API_KEY = "sk-fd4afcafe1c34d84b8ef5695d4e57869";
+
+let charList = JSON.parse(localStorage.getItem("charCardList")) || [];
+let currentId = null;
+
+const charSelect = document.getElementById("char-select");
+const charNameEl = document.getElementById("char-name");
+const charBgEl = document.getElementById("char-bg");
+const charPersonalityEl = document.getElementById("char-personality");
+const charRelationEl = document.getElementById("char-relation");
+const charRuleEl = document.getElementById("char-rule");
+const chatEl = document.getElementById("chat");
+const msgInput = document.getElementById("msg-input");
+const sendBtn = document.getElementById("send-btn");
+
+function saveStorage(){
+    try{
+        localStorage.setItem("charCardList", JSON.stringify(charList));
+        return true;
+    }catch(e){
+        alert("存储失败！无痕/隐私模式无法保存角色卡");
+        return false;
+    }
+}
+function refreshSelect(){
+    charSelect.innerHTML = "";
+    charList.forEach((c,idx)=>{
+        const opt = document.createElement("option");
+        opt.value = idx;
+        opt.innerText = c.name;
+        charSelect.appendChild(opt);
+    })
+    if(charList.length>0) loadChar(0);
+}
+function loadChar(idx){
+    const c = charList[idx];
+    currentId = idx;
+    charNameEl.value = c.name;
+    charBgEl.value = c.bg;
+    charPersonalityEl.value = c.personality;
+    charRelationEl.value = c.relation;
+    charRuleEl.value = c.rule;
+    renderChat();
+}
+function renderChat(){
+    chatEl.innerHTML = "";
+    if(currentId === null) return;
+    const history = charList[currentId].history;
+    history.forEach((item, idx)=>{
+        const wrap = document.createElement("div");
+        wrap.className = "msg-wrap " + item.type;
+        const msgDiv = document.createElement("div");
+        msgDiv.className = "msg";
+        msgDiv.innerText = item.content;
+        const ctrl = document.createElement("div");
+        ctrl.className = "msg-ctrl";
+        // 编辑按钮：用户消息、AI消息都可以编辑
+        const editBtn = document.createElement("button");
+        editBtn.innerText = "编辑";
+        editBtn.onclick = ()=> editMsg(idx);
+        ctrl.appendChild(editBtn);
+        // 重新生成按钮：只有AI消息显示
+        if(item.type === "ai"){
+            const regenBtn = document.createElement("button");
+            regenBtn.innerText = "重新生成";
+            regenBtn.className = "btn-regen";
+            regenBtn.onclick = ()=> regenAiMsg(idx);
+            ctrl.appendChild(regenBtn);
+        }
+        const delBtn = document.createElement("button");
+        delBtn.innerText = "删除";
+        delBtn.className = "btn-del";
+        delBtn.onclick = ()=> deleteOneMsg(idx);
+        ctrl.appendChild(delBtn);
+        wrap.appendChild(msgDiv);
+        wrap.appendChild(ctrl);
+        chatEl.appendChild(wrap);
+    })
+    chatEl.scrollTop = chatEl.scrollHeight;
+}
+// 编辑消息
+async function editMsg(idx){
+    const history = charList[currentId].history;
+    const newText = prompt("修改这条内容：", history[idx].content);
+    if(newText === null) return;
+    history[idx].content = newText;
+    // 如果是用户消息：删掉这条之后所有内容，重新生成AI回复
+    if(history[idx].type === "user"){
+        charList[currentId].history = history.slice(0, idx+1);
+        saveStorage();
+        renderChat();
+        await regenAiMsg(idx+1);
+    }else{
+        // 如果是AI消息，只改文字，不自动重生成
+        saveStorage();
+        renderChat();
+    }
+}
+// 【AI消息重新生成 - 原地替换这条AI】
+async function regenAiMsg(aiIndex){
+    const char = charList[currentId];
+    const history = char.history;
+    // 找到这个AI前面的用户消息
+    if(aiIndex <=0 || history[aiIndex].type !== "ai") return;
+    const context = history.slice(0, aiIndex);
+    // 上下文必须以用户消息结尾
+    if(context[context.length-1].type !== "user"){
+        alert("无法重生成，前面没有用户台词");
+        return;
+    }
+    // 临时加载动画
+    history[aiIndex].content = "生成中...";
+    saveStorage();
+    renderChat();
+
+    const fullSystemPrompt = `角色名称：${char.name}
+人物背景：${char.bg}
+性格特点：${char.personality}
+人物关系：${char.relation}
+输出规则：${char.rule}`;
+    const messages = [{"role":"system","content":fullSystemPrompt}];
+    context.forEach(h=>{
+        messages.push({role: h.type === "user" ? "user" : "assistant", content: h.content});
+    })
+    try{
+        const res = await fetch("https://api.deepseek.com/v1/chat/completions",{
+            method:"POST",
+            headers:{
+                "Content-Type":"application/json",
+                "Authorization":`Bearer ${API_KEY}`
+            },
+            body:JSON.stringify({
+                model:"deepseek-chat",
+                messages:messages,
+                temperature:0.7,
+                stream:true
+            })
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let aiText = "";
+        while(true){
+            const {done,value} = await reader.read();
+            if(done) break;
+            const chunk = decoder.decode(value);
+            const lines = chunk.split("\n");
+            for(const line of lines){
+                if(!line.startsWith("data: ")) continue;
+                const s = line.replace("data: ","");
+                if(s === "[DONE]") continue;
+                try{
+                    const d = JSON.parse(s);
+                    const delta = d.choices[0].delta.content;
+                    if(delta){
+                        aiText += delta;
+                        history[aiIndex].content = aiText;
+                        renderChat();
+                    }
+                }catch(e){}
+            }
+        }
+        history[aiIndex].content = aiText;
+        saveStorage();
+        renderChat();
+    }catch(err){
+        history[aiIndex].content = "请求失败，请检查网络、密钥或者额度";
+        saveStorage();
+        renderChat();
+    }
+}
+// 删除单条
+function deleteOneMsg(idx){
+    if(!confirm("删除这条消息？")) return;
+    charList[currentId].history.splice(idx,1);
+    saveStorage();
+    renderChat();
+}
+function clearChat(){
+    if(currentId===null) return;
+    if(!confirm("确定清空当前全部对话？角色卡信息不会删除")) return;
+    charList[currentId].history = [];
+    saveStorage();
+    renderChat();
+}
+function exportChatLog(){
+    if(currentId===null){
+        alert("先选中角色！");
+        return;
+    }
+    const history = charList[currentId].history;
+    let text = `【${charList[currentId].name}】会话记录\n`;
+    history.forEach(item=>{
+        const tag = item.type === "user" ? "我：" : `${charList[currentId].name}：`;
+        text += tag + item.content + "\n\n";
+    })
+    const blob = new Blob([text], {type:"text/plain"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = charList[currentId].name + "_会话记录.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+}
+function newChar(){
+    const defaultRule = "只回复一句话，第三人称视角，60字以内。可加入已有配角言行，禁止凭空新增陌生人物。动作、神态、环境、心理描写全部用括号包裹。角色拥有喜怒哀乐，语言生活化自然鲜活，拒绝模板化，避免OOC。";
+    const newC = {
+        name:"新角色",
+        bg:"",
+        personality:"性格冷淡内敛",
+        relation:"",
+        rule:defaultRule,
+        history:[]
+    }
+    charList.push(newC);
+    saveStorage();
+    refreshSelect();
+    currentId = charList.length - 1;
+    charSelect.value = currentId;
+    loadChar(currentId);
+}
+function saveChar(){
+    if(currentId===null){
+        alert("请先点【新建角色卡】！");
+        return;
+    }
+    charList[currentId].name = charNameEl.value.trim();
+    charList[currentId].bg = charBgEl.value.trim();
+    charList[currentId].personality = charPersonalityEl.value.trim();
+    charList[currentId].relation = charRelationEl.value.trim();
+    charList[currentId].rule = charRuleEl.value.trim();
+    if(saveStorage()){
+        alert("✅角色卡保存成功");
+        refreshSelect();
+    }
+}
+function delChar(){
+    if(currentId===null || !confirm("确定删除该角色卡以及全部对话记录？")) return;
+    charList.splice(currentId,1);
+    saveStorage();
+    refreshSelect();
+}
+function exportChar(){
+    if(currentId===null){
+        alert("请先选中一个角色卡！");
+        return;
+    }
+    const char = charList[currentId];
+    const blob = new Blob([JSON.stringify(char,null,2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = char.name + "_角色卡.json";
+    a.click();
+    URL.revokeObjectURL(url);
+}
+function importChar(inputDom){
+    const file = inputDom.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = e=>{
+        try{
+            const data = JSON.parse(e.target.result);
+            if(!data.name || !("bg" in data) || !("personality" in data) || !("relation" in data) || !("rule" in data) || !("history" in data)){
+                alert("❌文件格式不对，不是合法角色卡！");
+                return;
+            }
+            charList.push(data);
+            saveStorage();
+            refreshSelect();
+            alert("✅导入成功！");
+        }catch(err){
+            alert("❌解析失败，json文件损坏");
+        }
+    }
+    reader.readAsText(file);
+    inputDom.value = "";
+}
+async function send(){
+    const text = msgInput.value.trim();
+    if(!text || currentId===null) return;
+    const char = charList[currentId];
+    char.history.push({type:"user", content:text});
+    char.history.push({type:"ai", content:"生成中..."});
+    saveStorage();
+    renderChat();
+    msgInput.value = "";
+    await regenAiMsg(char.history.length-1);
+}
+sendBtn.onclick = send;
+msgInput.onkeydown = e=>{if(e.key==="Enter") send()}
+charSelect.onchange = ()=>loadChar(charSelect.value);
+
+refreshSelect();
+</script>
+</body>
+</html>
